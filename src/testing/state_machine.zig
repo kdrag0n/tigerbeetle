@@ -152,7 +152,7 @@ pub fn StateMachineType(
         }
 
         fn open_callback(forest: *Forest) void {
-            const state_machine = @fieldParentPtr(StateMachine, "forest", forest);
+            const state_machine: *StateMachine = @fieldParentPtr("forest", forest);
             const callback = state_machine.callback.?;
             state_machine.callback = null;
 
@@ -203,7 +203,7 @@ pub fn StateMachineType(
         }
 
         fn prefetch_callback(completion: *ThingGroove.PrefetchContext) void {
-            const state_machine = @fieldParentPtr(StateMachine, "prefetch_context", completion);
+            const state_machine: *StateMachine = @fieldParentPtr("prefetch_context", completion);
             const callback = state_machine.callback.?;
             state_machine.callback = null;
 
@@ -252,7 +252,7 @@ pub fn StateMachineType(
         }
 
         fn compact_callback(forest: *Forest) void {
-            const state_machine = @fieldParentPtr(StateMachine, "forest", forest);
+            const state_machine: *StateMachine = @fieldParentPtr("forest", forest);
             const callback = state_machine.callback.?;
             state_machine.callback = null;
 
@@ -270,7 +270,7 @@ pub fn StateMachineType(
         }
 
         fn checkpoint_callback(forest: *Forest) void {
-            const state_machine = @fieldParentPtr(StateMachine, "forest", forest);
+            const state_machine: *StateMachine = @fieldParentPtr("forest", forest);
             const callback = state_machine.callback.?;
             state_machine.callback = null;
 
