@@ -14,7 +14,7 @@ test "write/read/close" {
         io: IO,
         done: bool = false,
 
-        fd: ?os.fd_t = null,
+        fd: ?std.posix.fd_t = null,
         write_buf: [20]u8 = [_]u8{97} ** 20,
         read_buf: [20]u8 = [_]u8{98} ** 20,
 
@@ -113,10 +113,10 @@ test "accept/connect/send/receive" {
 
         io: *IO,
         done: bool = false,
-        server: os.socket_t,
-        client: os.socket_t,
+        server: std.posix.socket_t,
+        client: std.posix.socket_t,
 
-        accepted_sock: os.socket_t = undefined,
+        accepted_sock: std.posix.socket_t = undefined,
 
         send_buf: [10]u8 = [_]u8{ 1, 0, 1, 0, 1, 0, 1, 0, 1, 0 },
         recv_buf: [5]u8 = [_]u8{ 0, 1, 0, 1, 0 },
@@ -131,10 +131,10 @@ test "accept/connect/send/receive" {
             const address = try std.net.Address.parseIp4("127.0.0.1", 0);
             const kernel_backlog = 1;
             const server = try io.open_socket(address.any.family, os.SOCK.STREAM, os.IPPROTO.TCP);
-            defer os.closeSocket(server);
+            defer io.close_socket(server);
 
             const client = try io.open_socket(address.any.family, os.SOCK.STREAM, os.IPPROTO.TCP);
-            defer os.closeSocket(client);
+            defer io.close_socket(client);
 
             try os.setsockopt(
                 server,
@@ -206,7 +206,7 @@ test "accept/connect/send/receive" {
         fn accept_callback(
             self: *Context,
             completion: *IO.Completion,
-            result: IO.AcceptError!os.socket_t,
+            result: IO.AcceptError!std.posix.socket_t,
         ) void {
             self.accepted_sock = result catch @panic("accept error");
             self.io.recv(
@@ -340,7 +340,7 @@ test "tick to wait" {
         const Context = @This();
 
         io: IO,
-        accepted: os.socket_t = IO.INVALID_SOCKET,
+        accepted: std.posix.socket_t = IO.INVALID_SOCKET,
         connected: bool = false,
         received: bool = false,
 
@@ -353,7 +353,7 @@ test "tick to wait" {
 
             const server =
                 try self.io.open_socket(address.any.family, os.SOCK.STREAM, os.IPPROTO.TCP);
-            defer os.closeSocket(server);
+            defer self.io.close_socket(server);
 
             try os.setsockopt(
                 server,
@@ -370,7 +370,7 @@ test "tick to wait" {
 
             const client =
                 try self.io.open_socket(client_address.any.family, os.SOCK.STREAM, os.IPPROTO.TCP);
-            defer os.closeSocket(client);
+            defer self.io.close_socket(client);
 
             // Start the accept
             var server_completion: IO.Completion = undefined;
@@ -396,7 +396,7 @@ test "tick to wait" {
 
             assert(self.connected);
             assert(self.accepted != IO.INVALID_SOCKET);
-            defer os.closeSocket(self.accepted);
+            defer self.io.close_socket(self.accepted);
 
             // Start receiving on the client
             var recv_completion: IO.Completion = undefined;
@@ -438,7 +438,7 @@ test "tick to wait" {
         fn accept_callback(
             self: *Context,
             completion: *IO.Completion,
-            result: IO.AcceptError!os.socket_t,
+            result: IO.AcceptError!std.posix.socket_t,
         ) void {
             _ = completion;
 
@@ -471,7 +471,7 @@ test "tick to wait" {
         }
 
         // TODO: use os.send() instead when it gets fixed for windows
-        fn os_send(sock: os.socket_t, buf: []const u8, flags: u32) !usize {
+        fn os_send(sock: std.posix.socket_t, buf: []const u8, flags: u32) !usize {
             if (builtin.target.os.tag != .windows) {
                 return os.send(sock, buf, flags);
             }
@@ -524,7 +524,7 @@ test "pipe data over socket" {
 
         const Context = @This();
         const Socket = struct {
-            fd: os.socket_t = IO.INVALID_SOCKET,
+            fd: std.posix.socket_t = IO.INVALID_SOCKET,
             completion: IO.Completion = undefined,
         };
         const Pipe = struct {
@@ -549,7 +549,7 @@ test "pipe data over socket" {
             defer self.io.deinit();
 
             self.server.fd = try self.io.open_socket(os.AF.INET, os.SOCK.STREAM, os.IPPROTO.TCP);
-            defer os.closeSocket(self.server.fd);
+            defer self.io.close_socket(self.server.fd);
 
             const address = try std.net.Address.parseIp4("127.0.0.1", 0);
             try os.setsockopt(
@@ -575,7 +575,7 @@ test "pipe data over socket" {
             );
 
             self.tx.socket.fd = try self.io.open_socket(os.AF.INET, os.SOCK.STREAM, os.IPPROTO.TCP);
-            defer os.closeSocket(self.tx.socket.fd);
+            defer self.io.close_socket(self.tx.socket.fd);
 
             self.io.connect(
                 *Context,
@@ -599,7 +599,7 @@ test "pipe data over socket" {
             try testing.expect(self.server.fd != IO.INVALID_SOCKET);
             try testing.expect(self.tx.socket.fd != IO.INVALID_SOCKET);
             try testing.expect(self.rx.socket.fd != IO.INVALID_SOCKET);
-            os.closeSocket(self.rx.socket.fd);
+            self.io.close_socket(self.rx.socket.fd);
 
             try testing.expectEqual(self.tx.transferred, buffer_size);
             try testing.expectEqual(self.rx.transferred, buffer_size);
@@ -609,7 +609,7 @@ test "pipe data over socket" {
         fn on_accept(
             self: *Context,
             completion: *IO.Completion,
-            result: IO.AcceptError!os.socket_t,
+            result: IO.AcceptError!std.posix.socket_t,
         ) void {
             assert(self.rx.socket.fd == IO.INVALID_SOCKET);
             assert(&self.server.completion == completion);

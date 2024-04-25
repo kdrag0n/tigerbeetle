@@ -286,7 +286,7 @@ pub fn GrooveType(
 
     const _IndexTrees = @Type(.{
         .Struct = .{
-            .layout = .Auto,
+            .layout = .auto,
             .fields = index_fields,
             .decls = &.{},
             .is_tuple = false,
@@ -294,7 +294,7 @@ pub fn GrooveType(
     });
     const IndexTreeOptions = @Type(.{
         .Struct = .{
-            .layout = .Auto,
+            .layout = .auto,
             .fields = index_options_fields,
             .decls = &.{},
             .is_tuple = false,

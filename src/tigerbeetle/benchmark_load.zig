@@ -10,8 +10,8 @@ const builtin = @import("builtin");
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 const log = std.log;
-pub const std_options = struct {
-    pub const log_level: std.log.Level = .info;
+pub const std_options = .{
+    .log_level = .info,
 };
 
 const build_options = @import("vsr_options");
@@ -533,7 +533,7 @@ fn print_percentiles_histogram(
 
     const percentiles = [_]u64{ 1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 100 };
     for (percentiles) |percentile| {
-        var histogram_percentile: usize = @divTrunc(histogram_total * percentile, 100);
+        const histogram_percentile: usize = @divTrunc(histogram_total * percentile, 100);
 
         // Since each bucket in our histogram represents 1ms, the bucket we're in is the ms value.
         var sum: usize = 0;
