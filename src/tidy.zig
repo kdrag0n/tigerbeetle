@@ -131,7 +131,7 @@ const DeadDetector = struct {
     }
 
     fn file_state(detector: *DeadDetector, path: []const u8) !*FileState {
-        var gop = try detector.files.getOrPut(path_to_name(path));
+        const gop = try detector.files.getOrPut(path_to_name(path));
         if (!gop.found_existing) gop.value_ptr.* = .{ .import_count = 0, .definition_count = 0 };
         return gop.value_ptr;
     }
@@ -241,9 +241,9 @@ test "tidy no large blobs" {
     while (lines.next()) |line| {
         // Parsing lines like
         //     blob 1032 client/package.json
-        var blob = stdx.cut_prefix(line, "blob ") orelse continue;
+        const blob = stdx.cut_prefix(line, "blob ") orelse continue;
 
-        var cut = stdx.cut(blob, " ").?;
+        const cut = stdx.cut(blob, " ").?;
         const size = try std.fmt.parseInt(u64, cut.prefix, 10);
         const path = cut.suffix;
 
@@ -364,7 +364,6 @@ fn parse_multiline_string(line: []const u8) ?[]const u8 {
 }
 
 const naughty_list = [_][]const u8{
-    "clients/c/tb_client_header_test.zig",
     "clients/c/tb_client.zig",
     "clients/c/tb_client/context.zig",
     "clients/c/tb_client/signal.zig",
