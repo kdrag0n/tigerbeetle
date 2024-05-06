@@ -2178,6 +2178,8 @@ pub fn ReplicaType(
                 assert(view_checkpoint.header.op > self.op_checkpoint());
 
                 if (self.syncing == .idle or self.syncing == .stuck) {
+                    if (self.commit_stage == .checkpoint_superblock) return;
+                    if (self.commit_stage == .checkpoint_data) return;
                     self.sync_start_from_committing();
                     assert(self.syncing != .idle);
                 }
