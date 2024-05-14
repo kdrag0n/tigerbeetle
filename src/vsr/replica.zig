@@ -5897,6 +5897,7 @@ pub fn ReplicaType(
 
             self.repair_timeout.reset();
             if (self.syncing == .updating_superblock) return;
+            if (!self.state_machine_opened) return;
 
             assert(self.status == .normal or self.status == .view_change);
             assert(self.repairs_allowed());
