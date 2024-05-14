@@ -6082,6 +6082,7 @@ pub fn ReplicaType(
             assert(header.valid_checksum());
             assert(header.invalid() == null);
             assert(header.command == .prepare);
+            if (self.syncing == .updating_superblock) return false;
 
             if (header.view > self.view) {
                 log.debug("{}: repair_header: op={} checksum={} view={} (newer view)", .{
