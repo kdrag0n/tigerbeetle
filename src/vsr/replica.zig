@@ -2256,6 +2256,9 @@ pub fn ReplicaType(
                 },
                 .recovering_head => {
                     self.transition_to_normal_from_recovering_head_status(message.header.view);
+                    if (self.syncing == .updating_superblock) {
+                        self.view_durable_update();
+                    }
                     self.commit_journal();
                 },
                 .normal => {
