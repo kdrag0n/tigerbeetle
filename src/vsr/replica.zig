@@ -7573,7 +7573,10 @@ pub fn ReplicaType(
                 (self.replica != self.primary_index(self.view) or self.status == .normal);
             assert(!(update_dvc and update_sv));
 
-            if (update_dvc or update_sv) self.view_durable_update();
+            const update_checkpoint = self.syncing == .updating_superblock and
+                self.syncing.updating_superblock.checkpoint_state.header.op > self.op_checkpoint();
+
+            if (update_dvc or update_sv or update_checkpoint) self.view_durable_update();
 
             // Reset SVC timeout in case the view-durable update took a long time.
             if (self.view_change_status_timeout.ticking) self.view_change_status_timeout.reset();
