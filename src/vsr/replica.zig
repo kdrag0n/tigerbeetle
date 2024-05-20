@@ -5643,11 +5643,11 @@ pub fn ReplicaType(
                     break :repair_min 0;
                 }
 
-                const op_checkpoint_trigger =
-                    vsr.Checkpoint.trigger_for_checkpoint(self.op_checkpoint()).?;
+                const op_checkpoint_prepare_max =
+                    vsr.Checkpoint.prepare_max_for_checkpoint(self.op_checkpoint()).?;
                 // After state sync, commit_max might lag behind checkpoint_op.
-                maybe(self.commit_max < op_checkpoint_trigger);
-                if (self.commit_max > op_checkpoint_trigger) {
+                maybe(self.commit_max < op_checkpoint_prepare_max);
+                if (self.commit_max > op_checkpoint_prepare_max) {
                     if (self.op == self.op_checkpoint()) {
                         // Don't allow "op_repair_min > op_head".
                         break :repair_min self.op_checkpoint();
