@@ -24,6 +24,7 @@ const flags = @import("../flags.zig");
 const fatal = flags.fatal;
 const Shell = @import("../shell.zig");
 const multiversioning = @import("../multiversioning.zig");
+const multiversion_binary_size_max = multiversioning.multiversion_binary_size_max;
 
 const Language = enum { dotnet, go, java, node, zig, docker };
 const LanguageSet = std.enums.EnumSet(Language);
@@ -141,14 +142,19 @@ fn build(shell: *Shell, languages: LanguageSet, info: VersionInfo) !void {
     }
 }
 
-fn build_macos_universal_binary(shell: *Shell, dst: []const u8, binaries: []const struct { cpu_type: i32, cpu_subtype: i32, path: []const u8 }) !void {
+fn build_macos_universal_binary(
+    shell: *Shell,
+    dst: []const u8,
+    binaries: []const struct { cpu_type: i32, cpu_subtype: i32, path: []const u8 },
+) !void {
     var section = try shell.open_section("build macos universal binary");
     defer section.close();
 
     // The offset start is relative to the end of the headers, rounded up to the alignment.
     // Use align of 2^14 == 16384 to match macOS. This is plenty for any headers, considering
     // we assert < 2048 to keep our reading buffers small in multiversioning.zig.
-    const headers_size = @sizeOf(std.macho.fat_header) + @sizeOf(std.macho.fat_arch) * binaries.len;
+    const headers_size = @sizeOf(std.macho.fat_header) + @sizeOf(std.macho.fat_arch) *
+        binaries.len;
     assert(headers_size < 2048);
 
     var binary_headers = try shell.arena.allocator().alloc(std.macho.fat_arch, binaries.len);
@@ -160,6 +166,7 @@ fn build_macos_universal_binary(shell: *Shell, dst: []const u8, binaries: []cons
 
         const binary_size: u32 = @intCast((try binary_file.stat()).size);
 
+        // The Mach-O header is big-endian...
         binary_header.* = std.macho.fat_arch{
             .cputype = @byteSwap(binary.cpu_type),
             .cpusubtype = @byteSwap(binary.cpu_subtype),
@@ -193,7 +200,10 @@ fn build_macos_universal_binary(shell: *Shell, dst: []const u8, binaries: []cons
 
         try output_file.seekTo(@byteSwap(binary_header.offset));
 
-        const binary_contents = try binary_file.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
+        const binary_contents = try binary_file.readToEndAlloc(
+            shell.arena.allocator(),
+            multiversion_binary_size_max,
+        );
         assert(binary_contents.len == @byteSwap(binary_header.size));
 
         try output_file.writeAll(binary_contents);
@@ -202,14 +212,19 @@ fn build_macos_universal_binary(shell: *Shell, dst: []const u8, binaries: []cons
 
 /// Builds a multi-version pack for the `target` specified, returns the metadata and writes the
 /// output pack to `pack_dst`.
-fn build_past_version_pack(shell: *Shell, comptime target: []const u8, debug: bool, pack_dst: []const u8) !multiversioning.MultiVersionMetadata.PastVersionPack {
+fn build_past_version_pack(
+    shell: *Shell,
+    comptime target: []const u8,
+    debug: bool,
+    pack_dst: []const u8,
+) !multiversioning.MultiVersionMetadata.PastVersionPack {
     var section = try shell.open_section("build multiversion pack");
     defer section.close();
 
     try shell.project_root.deleteTree("dist/tigerbeetle-past-pack");
 
     // Downloads and extract the last published release of TigerBeetle.
-    if (std.mem.indexOf(u8, target, "-macos") == null) {
+    if (std.mem.indexOf(u8, target, "-linux") != null) {
         // Standard non-macOS targets.
         try shell.exec("gh release download -D dist/tigerbeetle-past-pack -p tigerbeetle-{target}{debug}.zip", .{
             .target = target,
@@ -220,35 +235,7 @@ fn build_past_version_pack(shell: *Shell, comptime target: []const u8, debug: bo
             .debug = if (debug) "-debug" else "",
         });
     } else {
-        const llvm_lipo = for (@as([2][]const u8, .{ "llvm-lipo-16", "llvm-lipo" })) |llvm_lipo| {
-            if (shell.exec_stdout("{llvm_lipo} --version", .{
-                .llvm_lipo = llvm_lipo,
-            })) |llvm_lipo_version| {
-                log.info("llvm-lipo version {s}", .{llvm_lipo_version});
-                break llvm_lipo;
-            } else |_| {}
-        } else {
-            fatal("can't find llvm-lipo", .{});
-        };
-
-        // For macOS, download the universal binary and split it up.
-        try shell.exec("gh release download -D dist/tigerbeetle-past-pack -p tigerbeetle-universal-macos{debug}.zip", .{
-            .debug = if (debug) "-debug" else "",
-        });
-        try shell.exec("unzip -d dist/tigerbeetle-past-pack dist/tigerbeetle-past-pack/tigerbeetle-universal-macos{debug}.zip", .{
-            .debug = if (debug) "-debug" else "",
-        });
-        if (std.mem.eql(u8, target, "aarch64-macos")) {
-            try shell.exec("{llvm_lipo} -thin arm64 -output dist/tigerbeetle-past-pack/tigerbeetle-aarch64 dist/tigerbeetle-past-pack/tigerbeetle", .{
-                .llvm_lipo = llvm_lipo,
-            });
-            try shell.exec("mv -f dist/tigerbeetle-past-pack/tigerbeetle-aarch64 dist/tigerbeetle-past-pack/tigerbeetle", .{});
-        } else if (std.mem.eql(u8, target, "x86_64-macos")) {
-            try shell.exec("{llvm_lipo} -thin x86_64 -output dist/tigerbeetle-past-pack/tigerbeetle-x86_64 dist/tigerbeetle-past-pack/tigerbeetle", .{
-                .llvm_lipo = llvm_lipo,
-            });
-            try shell.exec("mv -f dist/tigerbeetle-past-pack/tigerbeetle-x86_64 dist/tigerbeetle-past-pack/tigerbeetle", .{});
-        }
+        @panic("only linux supports multiversioning for now");
     }
 
     // TODO: This code should be removed once the first multi-version release is bootstrapped!
@@ -270,7 +257,7 @@ fn build_past_version_pack(shell: *Shell, comptime target: []const u8, debug: bo
         const past_binary = try std.fs.cwd().openFile("./dist/tigerbeetle-past-pack/" ++ exe_name, .{ .mode = .read_only });
         // const past_binary = try std.fs.cwd().openFile("/home/federico/git/tigerbeetle/tigerbeetle-5/tigerbeetle", .{ .mode = .read_only });
         defer past_binary.close();
-        const past_binary_contents = try past_binary.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
+        const past_binary_contents = try past_binary.readToEndAlloc(shell.arena.allocator(), multiversion_binary_size_max);
 
         const checksum: u128 = multiversioning.checksum(past_binary_contents);
 
@@ -361,7 +348,7 @@ fn build_tigerbeetle(shell: *Shell, info: VersionInfo, dist_dir: std.fs.Dir) !vo
                     const current_binary = try std.fs.cwd().openFile(exe_name, .{ .mode = .read_only });
                     defer current_binary.close();
 
-                    const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
+                    const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), multiversion_binary_size_max);
                     break :blk multiversioning.checksum(current_binary_contents);
                 };
 
@@ -385,7 +372,7 @@ fn build_tigerbeetle(shell: *Shell, info: VersionInfo, dist_dir: std.fs.Dir) !vo
                     const current_binary = try std.fs.cwd().openFile(exe_name, .{ .mode = .read_only });
                     defer current_binary.close();
 
-                    const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
+                    const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), multiversion_binary_size_max);
                     break :blk multiversioning.checksum(current_binary_contents);
                 };
 

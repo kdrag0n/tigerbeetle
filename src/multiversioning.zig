@@ -12,6 +12,7 @@ const elf = std.elf;
 
 // Re-export to make release code easier.
 pub const checksum = @import("vsr/checksum.zig").checksum;
+pub const multiversion_binary_size_max = constants.multiversion_binary_size_max;
 
 /// Creates a virtual file backed by memory.
 pub fn open_memory_file(name: [*:0]const u8) os.fd_t {
@@ -683,18 +684,15 @@ fn exec_self_posix(binary_path_from: BinaryPathEnum) !noreturn {
         .argv_0 => std.os.argv[0],
     };
 
-    // FIXME: Pass env variables (and args).
-    const env = [_:null]?[*:0]u8{};
-    var args = [_:null]?[*:0]const u8{ "./tigerbeetle", "start", "--addresses=127.0.0.1:3002", "/tmp/0_0.tigerbeetle" };
+    // We can pass through our env and args as-is to exec. We have to manipulate the types
+    // here somewhat: they're cast in start.zig and we can't access `argc_argv_ptr`
+    // directly.
+    // process.zig does the same trick in execve().
+    const cast_args: [*:null]const ?[*:0]const u8 = @ptrCast(std.os.argv.ptr);
+    const cast_envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.os.environ.ptr);
 
     std.log.info("Re-executing {s}...\n", .{binary_path});
-    return std.os.execveZ(binary_path, args[0..args.len], env[0..env.len]);
-}
-
-fn exec_self_windows(binary_path_from: BinaryPathEnum) !noreturn {
-    _ = binary_path_from;
-    std.log.info("New binary detected - please re-run TigerBeetle.", .{});
-    @panic("todo");
+    return std.os.execveZ(binary_path, cast_args, cast_envp);
 }
 
 fn assert_or_error(condition: bool, err: anyerror) !void {
