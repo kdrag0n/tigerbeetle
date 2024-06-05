@@ -68,6 +68,8 @@ pub fn ContextType(
             const allowed_operations = [_]Client.StateMachine.Operation{
                 .create_accounts,
                 .create_transfers,
+                .import_accounts,
+                .import_transfers,
                 .lookup_accounts,
                 .lookup_transfers,
                 .get_account_transfers,

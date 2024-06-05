@@ -121,9 +121,9 @@ func (c *c_client) Close() {
 
 func getEventSize(op C.TB_OPERATION) uintptr {
 	switch op {
-	case C.TB_OPERATION_CREATE_ACCOUNTS:
+	case C.TB_OPERATION_CREATE_ACCOUNTS, C.TB_OPERATION_IMPORT_ACCOUNTS:
 		return unsafe.Sizeof(types.Account{})
-	case C.TB_OPERATION_CREATE_TRANSFERS:
+	case C.TB_OPERATION_CREATE_TRANSFERS, C.TB_OPERATION_IMPORT_TRANSFERS:
 		return unsafe.Sizeof(types.Transfer{})
 	case C.TB_OPERATION_LOOKUP_ACCOUNTS:
 		fallthrough
@@ -292,7 +292,7 @@ func (c *c_client) CreateAccounts(accounts []types.Account) ([]types.AccountEven
 		return nil, err
 	}
 
-	resultCount := wrote / int(unsafe.Sizeof(types.TransferEventResult{}))
+	resultCount := wrote / int(unsafe.Sizeof(types.AccountEventResult{}))
 	return results[0:resultCount], nil
 }
 
@@ -301,6 +301,42 @@ func (c *c_client) CreateTransfers(transfers []types.Transfer) ([]types.Transfer
 	results := make([]types.TransferEventResult, count)
 	wrote, err := c.doRequest(
 		C.TB_OPERATION_CREATE_TRANSFERS,
+		count,
+		unsafe.Pointer(&transfers[0]),
+		unsafe.Pointer(&results[0]),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	resultCount := wrote / int(unsafe.Sizeof(types.TransferEventResult{}))
+	return results[0:resultCount], nil
+}
+
+func (c *c_client) ImportAccounts(accounts []types.Account) ([]types.AccountEventResult, error) {
+	count := len(accounts)
+	results := make([]types.AccountEventResult, count)
+	wrote, err := c.doRequest(
+		C.TB_OPERATION_IMPORT_ACCOUNTS,
+		count,
+		unsafe.Pointer(&accounts[0]),
+		unsafe.Pointer(&results[0]),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	resultCount := wrote / int(unsafe.Sizeof(types.AccountEventResult{}))
+	return results[0:resultCount], nil
+}
+
+func (c *c_client) ImportTransfers(transfers []types.Transfer) ([]types.TransferEventResult, error) {
+	count := len(transfers)
+	results := make([]types.TransferEventResult, count)
+	wrote, err := c.doRequest(
+		C.TB_OPERATION_IMPORT_TRANSFERS,
 		count,
 		unsafe.Pointer(&transfers[0]),
 		unsafe.Pointer(&results[0]),

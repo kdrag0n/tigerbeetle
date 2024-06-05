@@ -92,7 +92,7 @@ func TestClient(t *testing.T) {
 }
 
 func doTestClient(t *testing.T, client Client) {
-	createTwoAccounts := func (t *testing.T) (types.Account, types.Account) {
+	createTwoAccounts := func(t *testing.T) (types.Account, types.Account) {
 		accountA := types.Account{
 			ID:     types.ID(),
 			Ledger: 1,
