@@ -256,10 +256,6 @@ pub const MultiVersion = struct {
         read_elf_string_table,
         read_elf_section: u64,
 
-        // PE and MachO are easy to read - all the data is within the first ~2KB.
-        read_macho_header,
-        read_pe_header,
-
         read_multiversion_metadata,
         ready,
         err: anyerror,
@@ -278,52 +274,6 @@ pub const MultiVersion = struct {
                 const fd = open_memory_file("tigerbeetle-exec-release");
                 try os.ftruncate(fd, constants.multiversion_binary_size_max);
 
-                break :blk fd;
-            },
-            .macos => blk: {
-                const maybe_tmp_dir = std.os.getenv("TMPDIR");
-
-                if (maybe_tmp_dir) |tmp_dir| {
-                    const tmp_dir_fd = try IO.open_dir(tmp_dir);
-                    const fd = try IO.open_file(
-                        tmp_dir_fd,
-                        "randomly-generate-me-tigerbeetle",
-                        constants.multiversion_binary_size_max,
-                        .create,
-                        .direct_io_disabled,
-                    );
-                    try os.fchmod(fd, 0x700);
-
-                    break :blk fd;
-                } else {
-                    return error.TmpDirNotSet;
-                }
-            },
-            .windows => blk: {
-                var utf16le_buf: [os.windows.PATH_MAX_WIDE]u16 = undefined;
-                const result = GetTempPathW(utf16le_buf.len, &utf16le_buf);
-
-                if (result == 0) {
-                    switch (os.windows.kernel32.GetLastError()) {
-                        else => |err| return os.windows.unexpectedError(err),
-                    }
-                }
-
-                // Passing throught the pass and using the *W fns directly don't seem to work.
-                const utf8_path = try std.unicode.utf16leToUtf8Alloc(
-                    allocator,
-                    utf16le_buf[0..result :0],
-                );
-                defer allocator.free(utf8_path);
-
-                const tmp_dir_fd = try IO.open_dir(utf8_path);
-                const fd = try IO.open_file(
-                    tmp_dir_fd,
-                    "randomly-generate-me-tigerbeetle.exe",
-                    constants.multiversion_binary_size_max,
-                    .create,
-                    .direct_io_disabled,
-                );
                 break :blk fd;
             },
             else => @panic("multiversioning unimplemented"),
@@ -402,8 +352,6 @@ pub const MultiVersion = struct {
     pub fn read_from_binary(self: *MultiVersion, callback: ?Callback) void {
         switch (builtin.target.os.tag) {
             .linux => self.read_from_elf(callback),
-            .macos => self.read_from_macho(callback),
-            .windows => self.read_from_pe(callback),
             else => @panic("read_from_binary unimplemented"),
         }
     }
@@ -573,133 +521,6 @@ pub const MultiVersion = struct {
         }
     }
 
-    pub fn read_from_macho(self: *MultiVersion, callback: ?Callback) void {
-        self.callback = callback;
-
-        // TODO: open() can block. Fix this and add openat() to io.
-        self.file = std.fs.openFileAbsolute(self.exe_path, .{ .mode = .read_only }) catch return self.handle_error(error.FileOpenError);
-
-        // Everything we need to read our metadata lies within the first 2048 bytes of our universal binary!
-        self.stage = .read_macho_header;
-        self.io.read(
-            *MultiVersion,
-            self,
-            on_read_from_macho_header,
-            &self.completion,
-            self.file.?.handle,
-            self.read_buffer[0..2048],
-            0,
-        );
-    }
-
-    fn on_read_from_macho_header(self: *MultiVersion, completion: *IO.Completion, result: IO.ReadError!usize) void {
-        std.log.info("read header?", .{});
-        _ = completion;
-        const read_bytes = result catch |e| return self.handle_error(e);
-        _ = read_bytes;
-
-        assert(self.stage == .read_macho_header);
-
-        var fat_header: std.macho.fat_header = undefined;
-        var fat_arches: [6]std.macho.fat_arch = undefined; // 6 -> x86_64, arm, {metadata, pack} for each
-
-        std.mem.copy(u8, std.mem.asBytes(&fat_header), self.read_buffer[0..@sizeOf(std.macho.fat_header)]);
-        std.mem.copy(u8, std.mem.asBytes(&fat_arches), self.read_buffer[@sizeOf(std.macho.fat_header)..][0..@sizeOf(@TypeOf(fat_arches))]);
-
-        // FIXME: assert -> error
-        assert(fat_header.magic == std.macho.FAT_CIGAM);
-        assert(@byteSwap(fat_header.nfat_arch) == fat_arches.len);
-
-        for (fat_arches) |fat_arch| {
-            if (builtin.target.cpu.arch == .aarch64) {
-                if (@byteSwap(fat_arch.cputype) == 0x00000001) {
-                    // VAX == .tbmvp for aarch64
-                    self.pack_offset = @byteSwap(fat_arch.offset);
-                } else if (@byteSwap(fat_arch.cputype) == 0x00000002) {
-                    // ROMP == .tbmvm for aarch64
-                    self.metadata_offset = @byteSwap(fat_arch.offset);
-                }
-            }
-
-            if (builtin.target.cpu.arch == .x86_64) {
-                if (@byteSwap(fat_arch.cputype) == 0x00000004) {
-                    // NS32032 == .tbmvp for x86_64
-                    self.pack_offset = @byteSwap(fat_arch.offset);
-                } else if (@byteSwap(fat_arch.cputype) == 0x00000005) {
-                    // NS32332 == .tbmvm for x86_64
-                    self.metadata_offset = @byteSwap(fat_arch.offset);
-                }
-            }
-        }
-
-        self.stage = .read_multiversion_metadata;
-
-        assert(self.pack_offset != null);
-        // assert(self.metadata_offset != null);
-
-        self.io.read(
-            *MultiVersion,
-            self,
-            on_read_multiversion_metadata,
-            &self.completion,
-            self.file.?.handle,
-            self.read_buffer[0..@sizeOf(MultiVersionMetadata)],
-            self.metadata_offset,
-        );
-    }
-
-    pub fn read_from_pe(self: *MultiVersion, callback: ?Callback) void {
-        self.callback = callback;
-
-        // TODO: open() can block. Fix this and add openat() to io.
-        self.file = std.fs.openFileAbsolute(self.exe_path, .{ .mode = .read_only }) catch return self.handle_error(error.FileOpenError);
-
-        self.stage = .read_pe_header;
-        self.io.read(
-            *MultiVersion,
-            self,
-            on_read_from_pe_header,
-            &self.completion,
-            self.file.?.handle,
-            self.read_buffer[0..2048],
-            0,
-        );
-    }
-
-    fn on_read_from_pe_header(self: *MultiVersion, completion: *IO.Completion, result: IO.ReadError!usize) void {
-        _ = completion;
-        const read_bytes = result catch |e| return self.handle_error(e);
-        _ = read_bytes;
-
-        assert(self.stage == .read_pe_header);
-
-        const coff = std.coff.Coff.init(self.read_buffer) catch |e| return self.handle_error(e);
-        const pack_section = coff.getSectionByName(".tbmvp");
-        const metadata_section = coff.getSectionByName(".tbmvm");
-
-        // FIXME: assert -> error
-        assert(pack_section != null);
-        assert(metadata_section != null);
-
-        self.pack_offset = pack_section.?.pointer_to_raw_data;
-        self.metadata_offset = metadata_section.?.pointer_to_raw_data;
-
-        self.stage = .read_multiversion_metadata;
-
-        assert(self.pack_offset != null);
-        // assert(self.metadata_offset != null);
-
-        self.io.read(
-            *MultiVersion,
-            self,
-            on_read_multiversion_metadata,
-            &self.completion,
-            self.file.?.handle,
-            self.read_buffer[0..@sizeOf(MultiVersionMetadata)],
-            self.metadata_offset,
-        );
-    }
-
     fn on_read_multiversion_metadata(self: *MultiVersion, completion: *IO.Completion, result: MultiVersionError!usize) void {
         const read_bytes = result catch |e| return self.handle_error(e);
 
@@ -764,8 +585,7 @@ pub const MultiVersion = struct {
 const BinaryPathEnum = enum { self_exe_path, argv_0 };
 pub fn exec_self(binary_path_from: BinaryPathEnum) !noreturn {
     return switch (builtin.target.os.tag) {
-        .linux, .macos => exec_self_posix(binary_path_from),
-        .windows => exec_self_windows(binary_path_from),
+        .linux => exec_self_posix(binary_path_from),
         else => @panic("exec_self unimplemented"),
     };
 }
@@ -845,8 +665,6 @@ pub fn exec_release(allocator: std.mem.Allocator, io: *IO, release: Release) !no
                 return error.ExecveatFailed;
             }
         },
-        .macos => {},
-        .windows => {},
         else => @panic("exec_release unimplemented"),
     }
 

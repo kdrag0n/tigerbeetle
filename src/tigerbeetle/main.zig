@@ -295,6 +295,7 @@ const Command = struct {
             &command.io,
             command.self_exe_path,
         );
+        defer multiversion.deinit(allocator);
 
         multiversion.read_from_binary(null);
         if (multiversion.tick_until_ready()) {

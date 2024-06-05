@@ -168,8 +168,6 @@ fn build_macos_universal_binary(shell: *Shell, dst: []const u8, binaries: []cons
             .@"align" = @byteSwap(@as(u32, @intCast(14))),
         };
 
-        std.log.info("header: {}", .{binary_header});
-
         current_offset += binary_size;
         current_offset = stdx.div_ceil(current_offset, 16384) * 16384;
     }
@@ -326,7 +324,7 @@ fn build_tigerbeetle(shell: *Shell, info: VersionInfo, dist_dir: std.fs.Dir) !vo
     // `dist`. MacOS is special cased below --- we use an extra step to merge x86 and arm binaries
     // into one.
     //TODO: use std.Target here
-    inline for (.{true}) |debug| {
+    inline for (.{ true, false }) |debug| {
         const debug_suffix = if (debug) "-debug" else "";
         inline for (targets) |target| {
             try shell.zig(
@@ -358,63 +356,65 @@ fn build_tigerbeetle(shell: *Shell, info: VersionInfo, dist_dir: std.fs.Dir) !vo
                 .exe_name = exe_name,
             });
 
-            const current_checksum: u128 = blk: {
-                const current_binary = try std.fs.cwd().openFile(exe_name, .{ .mode = .read_only });
-                defer current_binary.close();
+            if (!windows) {
+                const current_checksum: u128 = blk: {
+                    const current_binary = try std.fs.cwd().openFile(exe_name, .{ .mode = .read_only });
+                    defer current_binary.close();
 
-                const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
-                break :blk multiversioning.checksum(current_binary_contents);
-            };
+                    const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
+                    break :blk multiversioning.checksum(current_binary_contents);
+                };
 
-            const past_version_pack = try build_past_version_pack(shell, target, debug, "tigerbeetle-pack");
+                const past_version_pack = try build_past_version_pack(shell, target, debug, "tigerbeetle-pack");
 
-            // Explicitly write out zeros for the metadata, to compute the checksum.
-            var mvf = std.mem.zeroes(multiversioning.MultiVersionMetadata);
+                // Explicitly write out zeros for the metadata, to compute the checksum.
+                var mvf = std.mem.zeroes(multiversioning.MultiVersionMetadata);
 
-            var mvf_file = try std.fs.cwd().createFile("tigerbeetle-pack.metadata", .{ .truncate = true });
-            try mvf_file.writeAll(std.mem.asBytes(&mvf));
-            mvf_file.close();
+                var mvf_file = try std.fs.cwd().createFile("tigerbeetle-pack.metadata", .{ .truncate = true });
+                try mvf_file.writeAll(std.mem.asBytes(&mvf));
+                mvf_file.close();
 
-            // Use objcopy to add in our new pack, as well as its metadata - even though the metadata is still zero!
-            try shell.exec("{llvm_objcopy} --enable-deterministic-archives --keep-undefined --add-section .tbmvp=tigerbeetle-pack --set-section-flags .tbmvp=contents,noload,readonly --add-section .tbmvm=tigerbeetle-pack.metadata --set-section-flags .tbmvm=contents,noload,readonly {exe_name}", .{
-                .llvm_objcopy = llvm_objcopy,
-                .exe_name = exe_name,
-            });
+                // Use objcopy to add in our new pack, as well as its metadata - even though the metadata is still zero!
+                try shell.exec("{llvm_objcopy} --enable-deterministic-archives --keep-undefined --add-section .tbmvp=tigerbeetle-pack --set-section-flags .tbmvp=contents,noload,readonly --add-section .tbmvm=tigerbeetle-pack.metadata --set-section-flags .tbmvm=contents,noload,readonly {exe_name}", .{
+                    .llvm_objcopy = llvm_objcopy,
+                    .exe_name = exe_name,
+                });
 
-            // Take the checksum of the binary, with the zero'd metadata.
-            const checksum_without_metadata: u128 = blk: {
-                const current_binary = try std.fs.cwd().openFile(exe_name, .{ .mode = .read_only });
-                defer current_binary.close();
+                // Take the checksum of the binary, with the zero'd metadata.
+                const checksum_without_metadata: u128 = blk: {
+                    const current_binary = try std.fs.cwd().openFile(exe_name, .{ .mode = .read_only });
+                    defer current_binary.close();
 
-                const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
-                break :blk multiversioning.checksum(current_binary_contents);
-            };
+                    const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
+                    break :blk multiversioning.checksum(current_binary_contents);
+                };
 
-            mvf = multiversioning.MultiVersionMetadata{
-                .current_version = multiversioning.Release.from(try multiversioning.ReleaseTriple.parse(info.release_triple)).value,
-                .current_checksum = current_checksum,
-                .past = past_version_pack,
-                .checksum_without_metadata = checksum_without_metadata,
-            };
-            mvf.checksum_metadata = mvf.calculate_metadata_checksum();
+                mvf = multiversioning.MultiVersionMetadata{
+                    .current_version = multiversioning.Release.from(try multiversioning.ReleaseTriple.parse(info.release_triple)).value,
+                    .current_checksum = current_checksum,
+                    .past = past_version_pack,
+                    .checksum_without_metadata = checksum_without_metadata,
+                };
+                mvf.checksum_metadata = mvf.calculate_metadata_checksum();
 
-            mvf_file = try std.fs.cwd().createFile("tigerbeetle-pack.metadata", .{ .truncate = true });
-            try mvf_file.writeAll(std.mem.asBytes(&mvf));
-            mvf_file.close();
+                mvf_file = try std.fs.cwd().createFile("tigerbeetle-pack.metadata", .{ .truncate = true });
+                try mvf_file.writeAll(std.mem.asBytes(&mvf));
+                mvf_file.close();
 
-            // Replace the metadata with the final version.
-            try shell.exec("{llvm_objcopy} --enable-deterministic-archives --keep-undefined --remove-section .tbmvm --add-section .tbmvm=tigerbeetle-pack.metadata --set-section-flags .tbmvm=contents,noload,readonly {exe_name}", .{
-                .llvm_objcopy = llvm_objcopy,
-                .exe_name = exe_name,
-            });
+                // Replace the metadata with the final version.
+                try shell.exec("{llvm_objcopy} --enable-deterministic-archives --keep-undefined --remove-section .tbmvm --add-section .tbmvm=tigerbeetle-pack.metadata --set-section-flags .tbmvm=contents,noload,readonly {exe_name}", .{
+                    .llvm_objcopy = llvm_objcopy,
+                    .exe_name = exe_name,
+                });
 
-            // Finally, check the binary produced using both the old and new versions.
-            // FIXME: Do check with old binary downloaded, if it wasn't epoch
-            // const absolute_exe_name = try std.fs.cwd().realpathAlloc(shell.arena.allocator(), exe_name);
-            // const multiversion = try multiversioning.MultiVersion.from_elf(absolute_exe_name);
-            // try multiversion.validate(absolute_exe_name, shell.arena.allocator());
+                // Finally, check the binary produced using both the old and new versions.
+                // FIXME: Do check with old binary downloaded, if it wasn't epoch
+                // const absolute_exe_name = try std.fs.cwd().realpathAlloc(shell.arena.allocator(), exe_name);
+                // const multiversion = try multiversioning.MultiVersion.from_elf(absolute_exe_name);
+                // try multiversion.validate(absolute_exe_name, shell.arena.allocator());
 
-            // return error.Foo;
+                // return error.Foo;
+            }
 
             const zip_name = "tigerbeetle-" ++ target ++ debug_suffix ++ ".zip";
             try shell.exec("zip -9 {zip_path} {exe_name}", .{
@@ -449,30 +449,6 @@ fn build_tigerbeetle(shell: *Shell, info: VersionInfo, dist_dir: std.fs.Dir) !vo
                 shell.project_root,
                 "tigerbeetle-" ++ target,
             );
-
-            const past_version_pack = try build_past_version_pack(shell, target, debug, "tigerbeetle-pack-" ++ target);
-            const current_checksum: u128 = blk: {
-                const current_binary = try std.fs.cwd().openFile("tigerbeetle", .{ .mode = .read_only });
-                defer current_binary.close();
-
-                const current_binary_contents = try current_binary.readToEndAlloc(shell.arena.allocator(), 128 * 1024 * 1024);
-                break :blk multiversioning.checksum(current_binary_contents);
-            };
-
-            // Unlike Windows and Linux, checksum_without_metadata here is computed as the checksum(binary + past_version_pack).
-            const checksum_without_metadata = 1; // FIXME
-
-            var mvf = multiversioning.MultiVersionMetadata{
-                .current_version = multiversioning.Release.from(try multiversioning.ReleaseTriple.parse(info.release_triple)).value,
-                .current_checksum = current_checksum,
-                .past = past_version_pack,
-                .checksum_without_metadata = checksum_without_metadata,
-            };
-            mvf.checksum_metadata = mvf.calculate_metadata_checksum();
-
-            var mvf_file = try std.fs.cwd().createFile("tigerbeetle-pack-" ++ target ++ ".metadata", .{ .truncate = true });
-            try mvf_file.writeAll(std.mem.asBytes(&mvf));
-            mvf_file.close();
         }
 
         try build_macos_universal_binary(shell, "tigerbeetle", &.{
@@ -485,26 +461,6 @@ fn build_tigerbeetle(shell: *Shell, info: VersionInfo, dist_dir: std.fs.Dir) !vo
                 .cpu_type = std.macho.CPU_TYPE_X86_64,
                 .cpu_subtype = std.macho.CPU_SUBTYPE_X86_64_ALL,
                 .path = "tigerbeetle-x86_64-macos",
-            },
-            .{
-                .cpu_type = 0x00000001, // VAX == .tbmvp for aarch64
-                .cpu_subtype = 0x00000000,
-                .path = "tigerbeetle-pack-aarch64-macos",
-            },
-            .{
-                .cpu_type = 0x00000002, // ROMP == .tbmvm for aarch64
-                .cpu_subtype = 0x00000000,
-                .path = "tigerbeetle-pack-aarch64-macos.metadata",
-            },
-            .{
-                .cpu_type = 0x00000004, // NS32032 == .tbmvp for x86_64
-                .cpu_subtype = 0x00000000,
-                .path = "tigerbeetle-pack-x86_64-macos",
-            },
-            .{
-                .cpu_type = 0x00000005, // NS32332 == .tbmvm for x86_64
-                .cpu_subtype = 0x00000000,
-                .path = "tigerbeetle-pack-x86_64-macos.metadata",
             },
         });
 
