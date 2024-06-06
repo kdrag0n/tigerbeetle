@@ -28,7 +28,7 @@ for user-defined timestamps:
 - No timestamp regression
 
   Timestamps must always be increasing. Even user-defined timestamps that are required to be past
-  dates need to be at least one nanosecond ahead of the timestamp of the last object commited by
+  dates need to be at least one nanosecond ahead of the timestamp of the last object committed by
   the cluster.
 
 - No [`timeout`](../transfer.md#timeout) for [pending](../transfer.md#flagspending) transfers
@@ -39,7 +39,7 @@ for user-defined timestamps:
   done manually.
 
 Those constraints require importing past events such as
-`timestamp > last_timestamp_commited and timestamp < now`, which makes the process naturally
+`timestamp > last_timestamp_committed and timestamp < now`, which makes the process naturally
 restrictive to perform in a cluster during regular operation, where the last timestamp is
 frequently being updated. Instead, it's more suitable to be used in a fresh cluster before any
 [`create_accounts`](./create_accounts.md) or [`create_transfers`](./create_transfers.md) operation.
