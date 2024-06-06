@@ -728,6 +728,27 @@ pub const IO = struct {
         self.enqueue(completion);
     }
 
+    pub fn openat(
+        self: *IO,
+        comptime Context: type,
+        context: Context,
+        comptime callback: fn (
+            context: Context,
+            completion: *Completion,
+            result: ConnectError!void,
+        ) void,
+        completion: *Completion,
+        socket: os.socket_t,
+        address: std.net.Address,
+    ) void {
+        _ = address;
+        _ = socket;
+        _ = completion;
+        _ = callback;
+        _ = context;
+        _ = self;
+    }
+
     pub const ReadError = error{
         WouldBlock,
         NotOpenForReading,

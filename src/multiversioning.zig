@@ -14,6 +14,9 @@ const elf = std.elf;
 pub const checksum = @import("vsr/checksum.zig").checksum;
 pub const multiversion_binary_size_max = constants.multiversion_binary_size_max;
 
+/// Used when reading ELF binaries (multiple times, to jump around) or reading MachO / PE (once).
+pub const binary_read_buffer_size = 2048;
+
 /// Creates a virtual file backed by memory.
 pub fn open_memory_file(name: [*:0]const u8) os.fd_t {
     const mfd_cloexec = 0x0001;
@@ -231,8 +234,9 @@ pub const MultiVersion = struct {
     pub const Callback = *const fn (*MultiVersion, anyerror!void) void;
     pub const MultiVersionError = IO.ReadError || error{ FileOpenError, ShortRead, InvalidELFHeader, WrongEndian, Not64bit, LongStringTable, InvalidStringTable };
 
-    read_buffer: []u8,
     exe_path: []const u8,
+
+    read_buffer: []u8,
     elf_string_buffer: []u8,
     elf_header: elf.Header = undefined,
     io: *IO,
@@ -265,7 +269,7 @@ pub const MultiVersion = struct {
     callback: ?Callback = null,
 
     pub fn init(allocator: std.mem.Allocator, io: *IO, exe_path: []const u8) !MultiVersion {
-        const read_buffer = try allocator.alloc(u8, 2048);
+        const read_buffer = try allocator.alloc(u8, binary_read_buffer_size);
         const elf_string_buffer = try allocator.alloc(u8, 1024);
 
         // Only Linux has a nice API for executing from an in-memory file. For macOS and Windows,
