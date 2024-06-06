@@ -226,7 +226,8 @@ You can read more about [Time in TigerBeetle](../develop/time.md).
 Constraints:
 
 - Type is 64-bit unsigned integer (8 bytes)
-- Must be set to `0` by the user when the `Account` is created
+- Must be set to `0` by the user when the `Account` is created or
+  with a user-defined unique timestamp when [importing accounts](./requests/import_accounts.md).
 
 ## Internals
 

@@ -42,6 +42,8 @@ import (
 type Client interface {
 	CreateAccounts(accounts []types.Account) ([]types.AccountEventResult, error)
 	CreateTransfers(transfers []types.Transfer) ([]types.TransferEventResult, error)
+	ImportAccounts(accounts []types.Account) ([]types.AccountEventResult, error)
+	ImportTransfers(transfers []types.Transfer) ([]types.TransferEventResult, error)
 	LookupAccounts(accountIDs []types.Uint128) ([]types.Account, error)
 	LookupTransfers(transferIDs []types.Uint128) ([]types.Transfer, error)
 	GetAccountTransfers(filter types.AccountFilter) ([]types.Transfer, error)
@@ -140,9 +142,9 @@ func getEventSize(op C.TB_OPERATION) uintptr {
 
 func getResultSize(op C.TB_OPERATION) uintptr {
 	switch op {
-	case C.TB_OPERATION_CREATE_ACCOUNTS:
+	case C.TB_OPERATION_CREATE_ACCOUNTS, C.TB_OPERATION_IMPORT_ACCOUNTS:
 		return unsafe.Sizeof(types.AccountEventResult{})
-	case C.TB_OPERATION_CREATE_TRANSFERS:
+	case C.TB_OPERATION_CREATE_TRANSFERS, C.TB_OPERATION_IMPORT_TRANSFERS:
 		return unsafe.Sizeof(types.TransferEventResult{})
 	case C.TB_OPERATION_LOOKUP_ACCOUNTS:
 		return unsafe.Sizeof(types.Account{})

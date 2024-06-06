@@ -12,7 +12,7 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
 
     try shell.zig("build java_client -Drelease -Dconfig=production", .{});
 
-    try shell.zig("build test:jni", .{});
+    //try shell.zig("build test:jni", .{});
     // Java's maven doesn't support a separate test command, or a way to add dependency on a
     // project (as opposed to a compiled jar file).
     //

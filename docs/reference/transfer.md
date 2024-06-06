@@ -375,7 +375,8 @@ You can read more about [Time in TigerBeetle](../develop/time.md).
 Constraints:
 
 - Type is 64-bit unsigned integer (8 bytes)
-- Must be set to `0` by the user when the `Transfer` is created
+- Must be set to `0` by the user when the `Transfer` is created or
+  with a user-defined unique timestamp when [importing transfers](./requests/import_transfers.md).
 
 ## Internals
 
