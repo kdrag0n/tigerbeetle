@@ -18,8 +18,6 @@
 //! and try to repair the block from another replica, only to discover that the copy of the block on
 //! the remote replica's disk is *also* faulty.
 //!
-//! TODO Start replicas scrubbing from distinct/random offsets in the tour to farther minimize risk
-//! of cluster data loss. (Right now replicas will often have identical scrubbing schedules.)
 //! TODO Accelerate scrubbing rate (at runtime) if faults are detected frequently.
 const std = @import("std");
 const assert = std.debug.assert;
@@ -45,7 +43,7 @@ pub fn GridScrubberType(comptime Forest: type) type {
     return struct {
         const GridScrubber = @This();
         const Grid = GridType(Forest.Storage);
-        const ForestTableIterator = ForestTableIteratorType(Forest);
+        const WrappingForestTableIterator = WrappingForestTableIteratorType(Forest);
         const SuperBlock = vsr.SuperBlockType(Forest.Storage);
         const ManifestBlockIterator = ManifestBlockIteratorType(Forest.ManifestLog);
         const CheckpointTrailer = vsr.CheckpointTrailerType(Forest.Storage);
@@ -98,11 +96,12 @@ pub fn GridScrubberType(comptime Forest: type) type {
         reads_done: FIFO(Read) = .{ .name = "grid_scrubber_reads_done" },
 
         /// Track the progress through the grid.
-        /// - On an idle replica (i.e. not committing), a full tour from "init" to "done" scrubs
-        ///   every acquired block in the grid.
-        /// - On a non-idle replica, a full tour from "init" to "done" scrubs all blocks that
-        ///   survived the entire span of the tour, but may not scrub blocks that were added during
-        ///   the tour.
+        ///
+        /// Every full tour...
+        /// - ...on an idle replica (i.e. not committing) scrubs every acquired block in the grid.
+        /// - ...on a non-idle replica scrubs all blocks that survived the entire span of the tour
+        ///   without moving to a different level, but may not scrub blocks that were added during
+        ///   the tour or which moved.
         tour: union(enum) {
             init,
             done,
@@ -123,7 +122,10 @@ pub fn GridScrubberType(comptime Forest: type) type {
 
         /// When tour == .init, tour_tables == .{}
         /// When tour == .done, tour_tables.next() == null.
-        tour_tables: ForestTableIterator,
+        tour_tables: ?WrappingForestTableIterator,
+        /// The "offset" within the LSM from which scrubber table iteration cycles begin/end.
+        /// This varies between replicas to minimize risk of data loss.
+        tour_tables_origin: ?WrappingForestTableIterator.Origin,
 
         /// Contains a table index block when tour=table_data.
         tour_index_block: BlockPtr,
@@ -144,7 +146,8 @@ pub fn GridScrubberType(comptime Forest: type) type {
                 .forest = forest,
                 .client_sessions_checkpoint = client_sessions_checkpoint,
                 .tour = .init,
-                .tour_tables = .{},
+                .tour_tables = null,
+                .tour_tables_origin = null,
                 .tour_index_block = tour_index_block,
                 .tour_blocks_scrubbed_count = 0,
             };
@@ -156,6 +159,57 @@ pub fn GridScrubberType(comptime Forest: type) type {
             scrubber.* = undefined;
         }
 
+        pub fn open(scrubber: *GridScrubber, random: std.rand.Random) void {
+            // Compute the tour origin exactly once.
+            if (scrubber.tour_tables_origin != null) {
+                return;
+            }
+
+            // Each replica's scrub origin is chosen independently.
+            // This reduces the chance that the same block across multiple replicas can bitrot
+            // without being discovered and repaired by a scrubber.
+            //
+            // To accomplish this, try to select an origin uniformly across all blocks:
+            // - Bias towards levels with more tables.
+            // - Bias towards trees with more blocks per table.
+            // - (Though, for ease of implementation, the origin is always at the beginning of a
+            //   tree's level, never in the middle.)
+            assert(scrubber.tour == .init);
+
+            scrubber.tour_tables_origin = .{
+                .level = 0,
+                .tree_id = Forest.tree_infos[0].tree_id,
+            };
+
+            var weights_sum: u64 = 0;
+            for (0..constants.lsm_levels) |level| {
+                inline for (Forest.tree_infos) |tree_info| {
+                    const tree_id = comptime Forest.tree_id_cast(tree_info.tree_id);
+                    const tree = scrubber.forest.tree_for_id_const(tree_id);
+                    const levels = &tree.manifest.levels;
+                    const tree_level_weight = @as(u64, levels[level].tables.len()) *
+                        tree_info.Tree.Table.index.data_block_count_max;
+                    if (tree_level_weight > 0) {
+                        weights_sum += tree_level_weight;
+                        if (random.uintLessThan(u64, weights_sum) < tree_level_weight) {
+                            scrubber.tour_tables_origin = .{
+                                .level = @intCast(level),
+                                .tree_id = tree_info.tree_id,
+                            };
+                        }
+                    }
+                }
+            }
+
+            scrubber.tour_tables = WrappingForestTableIterator.init(scrubber.tour_tables_origin.?);
+
+            log.debug("{}: open: tour_tables_origin.level={} tour_tables_origin.tree_id={}", .{
+                scrubber.superblock.replica_index.?,
+                scrubber.tour_tables_origin.?.level,
+                scrubber.tour_tables_origin.?.tree_id,
+            });
+        }
+
         pub fn cancel(scrubber: *GridScrubber) void {
             for ([_]FIFO(Read){ scrubber.reads_busy, scrubber.reads_done }) |reads_fifo| {
                 var reads_iterator = reads_fifo.peek();
@@ -164,9 +218,10 @@ pub fn GridScrubberType(comptime Forest: type) type {
                 }
             }
 
-            scrubber.tour = .init;
-            scrubber.tour_tables = .{};
-            scrubber.tour_blocks_scrubbed_count = 0;
+            if (scrubber.tour == .table_data) {
+                // Skip scrubbing the table data; the table may not exist when state sync finishes.
+                scrubber.tour = .table_index;
+            }
         }
 
         /// Cancel queued reads to blocks that will be released by the imminent checkpoint.
@@ -322,6 +377,10 @@ pub fn GridScrubberType(comptime Forest: type) type {
         }
 
         fn tour_next(scrubber: *GridScrubber) ?BlockId {
+            assert(scrubber.superblock.opened);
+            assert(scrubber.forest.manifest_log.opened);
+            assert(scrubber.tour_tables_origin != null);
+
             const tour = &scrubber.tour;
             if (tour.* == .init) {
                 tour.* = .table_index;
@@ -365,7 +424,7 @@ pub fn GridScrubberType(comptime Forest: type) type {
             }
 
             if (tour.* == .table_index) {
-                if (scrubber.tour_tables.next(scrubber.forest)) |table_info| {
+                if (scrubber.tour_tables.?.next(scrubber.forest)) |table_info| {
                     if (Forest.Storage == TestStorage) {
                         scrubber.superblock.storage.verify_table(
                             table_info.address,
@@ -450,10 +509,60 @@ pub fn GridScrubberType(comptime Forest: type) type {
             // Wrap around to the next cycle.
             assert(tour.* == .done);
             tour.* = .init;
-            scrubber.tour_tables = .{};
+            scrubber.tour_tables = WrappingForestTableIterator.init(scrubber.tour_tables_origin.?);
             scrubber.tour_blocks_scrubbed_count = 0;
 
             return null;
+        }
+    };
+}
+
+fn WrappingForestTableIteratorType(comptime Forest: type) type {
+    return struct {
+        const WrappingForestTableIterator = @This();
+        const ForestTableIterator = ForestTableIteratorType(Forest);
+
+        origin: Origin,
+        tables: ForestTableIterator,
+        wrapped: bool,
+
+        pub const Origin = struct {
+            level: u6,
+            tree_id: u16,
+        };
+
+        pub fn init(origin: Origin) WrappingForestTableIterator {
+            return .{
+                .origin = origin,
+                .tables = .{
+                    .level = origin.level,
+                    .tree_id = origin.tree_id,
+                },
+                .wrapped = false,
+            };
+        }
+
+        pub fn next(
+            iterator: *WrappingForestTableIterator,
+            forest: *const Forest,
+        ) ?schema.ManifestNode.TableInfo {
+            const table = iterator.tables.next(forest) orelse {
+                if (iterator.wrapped) {
+                    return null;
+                } else {
+                    iterator.wrapped = true;
+                    iterator.tables = .{};
+                    return iterator.tables.next(forest);
+                }
+            };
+
+            if (iterator.wrapped and
+                iterator.origin.level <= table.label.level and
+                iterator.origin.tree_id <= table.tree_id)
+            {
+                return null;
+            }
+            return table;
         }
     };
 }
@@ -526,4 +635,127 @@ fn ManifestBlockIteratorType(comptime ManifestLog: type) type {
             }
         }
     };
+}
+
+// Model the probability that the cluster experiences data loss due to bitrot.
+// Specifically, that *every* copy of *any* block is corrupted before the scrubber can repair it.
+//
+// Optimistic assumptions (see below):
+// - Faults are independent between replicas. ¹
+// - Faults are independent (i.e. uncorrelated) in space and time. ²
+//
+// Pessimistic assumptions:
+// - There are only 3 (quorum_replication) copies of each sector.
+// - Scrub randomization is ignored.
+// - The simulated fault rate is much greater than a real disk's. (See `sector_faults_per_year`).
+// - Reads, writes, and repairs due to other workloads (besides the scrubber) are not modelled.
+// - All blocks are always full (512KiB).
+//
+// ¹: To mitigate the risk of correlated errors in production, replicas could use different SSD
+// (hardware) models.
+//
+// ²: SSD faults are not independent (in either time or space).
+// See, for example:
+// - "An In-Depth Study of Correlated Failures in Production SSD-Based Data Centers"
+//   (https://www.usenix.org/system/files/fast21-han.pdf)
+// - "Flash Reliability in Production: The Expected and the Unexpected"
+//   (https://www.usenix.org/system/files/conference/fast16/fast16-papers-schroeder.pdf)
+// That being said, for the purposes of modelling scrubbing, it is a decent approximation because
+// blocks are large relative to sectors. (Additionally, blocks that are written together are often
+// scrubbed together).
+test "GridScrubber cycle interval" {
+    // Parameters:
+
+    // The number of years that the test is "running". As the test runs longer, the probability that
+    // the cluster will experience data loss increases.
+    const test_duration_years = 20;
+
+    // The number of days between scrubs of a particular sector.
+    // Equivalently, the number of days to scrub the entire data file.
+    const cycle_interval_days = 180;
+
+    // The total size of the data file.
+    // Note that since this parameter is separate from the faults/year rate, increasing
+    // `storage_size` actually reduces the likelihood of data loss.
+    const storage_size = 16 * (1024 * 1024 * 1024 * 1024);
+
+    // The expected (average) number of sector faults per year.
+    // I can't find any good, recent statistics for faults on SSDs.
+    //
+    // Most papers express the fault rate as "UBER" (uncorrectable bit errors per total bits read).
+    // But "Flash Reliability in Production: The Expected and the Unexpected" §5.1 finds that
+    // UBER's underlying assumption ­ that the uncorrectable errors is correlated to the number of
+    // bytes read ­ is false. (That paper only shares "fraction of drives affected by an error",
+    // which is too coarse for this model's purposes.)
+    //
+    // Instead, the parameter is chosen conservatively ­ greater than the "true" number by at least
+    // an order of magnitude.
+    const sector_faults_per_year = 10_000;
+
+    // A block has multiple sectors. If any of a block's sectors are corrupt, then the block is
+    // corrupt.
+    //
+    // Increasing this parameter increases the likelihood of eventual data loss.
+    // (Intuitively, a single bitrot within 1GiB is more likely than a single bitrot within 1KiB.)
+    const block_size = 512 * 1024;
+
+    // The total number of copies of each sector.
+    // The cluster is recoverable if a sector's number of faults is less than `replicas_total`.
+    // Set to 3 rather than 6 since 3 is the quorum_replication.
+    const replicas_total = 3;
+
+    const sector_size = constants.sector_size;
+
+    // Computation:
+
+    const block_sectors = @divExact(block_size, sector_size);
+    const storage_sectors = @divExact(storage_size, sector_size);
+    const storage_blocks = @divExact(storage_size, block_size);
+    const test_duration_days = test_duration_years * 365;
+    const test_duration_cycles = stdx.div_ceil(test_duration_days, cycle_interval_days);
+    const sector_faults_per_cycle =
+        stdx.div_ceil(sector_faults_per_year * cycle_interval_days, 365);
+
+    // P(a specific block is uncorrupted for an entire cycle)
+    // If any of the block's sectors is corrupted, then the whole block is corrupted.
+    const p_block_healthy_per_cycle = std.math.pow(
+        f64,
+        @as(f64, @floatFromInt(storage_sectors - block_sectors)) /
+            @as(f64, @floatFromInt(storage_sectors)),
+        @as(f64, @floatFromInt(sector_faults_per_cycle)),
+    );
+
+    const p_block_corrupt_per_cycle = 1.0 - p_block_healthy_per_cycle;
+    // P(a specific block is corrupted on all replicas during a single cycle)
+    const p_cluster_block_corrupt_per_cycle =
+        std.math.pow(f64, p_block_corrupt_per_cycle, @as(f64, @floatFromInt(replicas_total)));
+    // P(a specific block is uncorrupted on at least one replica during a single cycle)
+    const p_cluster_block_healthy_per_cycle = 1.0 - p_cluster_block_corrupt_per_cycle;
+
+    // P(a specific block is uncorrupted on at least one replica for all cycles)
+    // Note that each cycle can be considered independently because we assume that if is at the end
+    // of the cycle there is at least one healthy copy, then all of the corrupt copies are repaired.
+    const p_cluster_block_healthy_per_span = std.math.pow(
+        f64,
+        p_cluster_block_healthy_per_cycle,
+        @as(f64, @floatFromInt(test_duration_cycles)),
+    );
+
+    // P(each block is uncorrupted on at least one replica for all cycles)
+    const p_cluster_blocks_healthy_per_span = std.math.pow(
+        f64,
+        p_cluster_block_healthy_per_span,
+        @as(f64, @floatFromInt(storage_blocks)),
+    );
+
+    // P(at some point during all cycles, at least one block is corrupt across all replicas)
+    // In other words, P(eventual data loss).
+    const p_cluster_blocks_corrupt_per_span = 1.0 - p_cluster_blocks_healthy_per_span;
+
+    const Snap = @import("../testing/snaptest.zig").Snap;
+    const snap = Snap.snap;
+
+    try snap(@src(),
+        \\4.3582921528e-03
+    ).diff_fmt("{e:.10}", .{p_cluster_blocks_corrupt_per_span});
 }
